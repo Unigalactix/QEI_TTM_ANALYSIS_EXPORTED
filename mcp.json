@@ -1,0 +1,49 @@
+{
+	"servers": {
+		"fabric-rti-mcp-icmtelemetry": {
+			"type": "stdio",
+			"command": "uvx",
+			"args": [
+				"microsoft-fabric-rti-mcp==0.1.0"
+			],
+			"env": {
+				"KUSTO_SERVICE_URI": "https://icmtelemetry.kusto.windows.net",
+				"KUSTO_SERVICE_DEFAULT_DB": "icmappinsightslogs"
+				//"AZ_OPENAI_EMBEDDING_ENDPOINT": "${input:az_openai_embedding_endpoint}"
+			}
+		},
+		"icmdataro-mcp": {
+			"type": "stdio",
+			"command": "uvx",
+			"args": [
+				"microsoft-fabric-rti-mcp==0.1.0"
+			],
+			"env": {
+				"KUSTO_SERVICE_URI": "https://icmdataro.centralus.kusto.windows.net",
+				"KUSTO_SERVICE_DEFAULT_DB": "IcmDataCommon"
+			}
+		},
+		"icm-mcp-server-test-centralus": {
+			"url": "https://icm-mcp-prod.azure-api.net/v1/",
+			"type": "http"
+		},
+		"ado": {
+			"type": "stdio",
+			"command": "npx",
+			"args": ["-y", "@azure-devops/mcp@next", "${input:Quadrant-VBU}"]
+    	}
+	},
+	"inputs": [
+		{
+			"id": "az_openai_embedding_endpoint",
+			"type": "promptString",
+			"description": "Azure OpenAI Embedding Endpoint (optional, for semantic search)",
+			"default": "https://openai-dev-westus3-001.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-05-15"
+		},
+		{
+			"id": "ado_org",
+			"type": "promptString",
+			"description": "Azure DevOps organization name  (e.g. 'contoso')"
+		}
+	]
+}

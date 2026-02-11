@@ -1,0 +1,241 @@
+let startDate = startofday(todatetime('01/01/2025'));
+let endDate = endofday(todatetime('09/30/2025'));
+let specialScopedOutages = cluster("Icmtelemetry").database("icmappinsightlogs").Event
+| where AuthId == 'scottgu'
+| where Name contains "bridge" and Name contains "join"
+| where Timestamp >= startDate and Timestamp <= endDate
+| project Name, Timestamp, Url = parse_json(CustomDimensionsKeyValuePairs)["url"]
+| extend IncidentId = extract(@"/details/(\d+)/", 1, tostring(Url))
+| distinct tolong(IncidentId);
+let ttmscope= cluster("icmdataro.centralus.kusto.windows.net").database("Common").Get_Bowler_Outages()
+| where OutageCreateDate between(startDate..endDate)
+| where (IsQCS == True or IsTier0 == True) and IsAutoDetectedAllClouds == 1
+| where DivisionName == "Cloud + AI Platform"
+| join kind=leftouter (Get_Icm_Outages() | project OutageIncidentId, TTEng, TTFix, TTD) on OutageIncidentId
+| extend 
+    IsPoTTN = toint(TTN > 0),
+    IsPoTTM = toint(TTM > 0),
+    IsPoTTO = toint(TTO > 0),
+    IsNnTTN = toint(TTN >= 0),
+    IsNnTTM = toint(TTM >= 0),
+    IsNnTTO = toint(TTO >= 0);
+let copilot = cluster("https://icmcopilot-prod-data.centralus.kusto.windows.net")
+    .database("IncidentSummary")
+    .IncidentSummary
+    | where IncidentId in (ttmscope | project OutageIncidentId)
+    | summarize arg_max(CompletionDate, *) by IncidentId
+    | project IncidentId = tolong(IncidentId), Results;
+let TransferAssistanceData=
+    cluster('https://icmclustermirrorsre.kusto.windows.net').database('IcMDataWarehouse').Notifications
+    | where CreateDate >= startDate
+    | where IncidentId in (database("IcmDataCommon").Get_Bowler_Outages | project OutageIncidentId)
+    | summarize TransferCount = countif(RequestType == "TRANSFER"), RACount = countif(RequestType == "INVITEMANUAL"), Notes = make_set(Notes) by IncidentId;
+let BCDR = cluster('drillmgrkusto.westus2').database('DrillMgr').Events
+    | where EventStartDate between (datetime(2024-09-08) .. datetime(2027-09-09))
+    | project BCDREventName=EventName, BCDRIcmId=MasterTicketId, BCDRStartTime=EventStartDate, BCDRRegions=ImpactRegions;
+let BCDRRelatedIcms = Get_Icm_Events_LinkedIncidents()
+| join kind=inner BCDR on $left.ResponsibleIncidentId==$right.BCDRIcmId
+| project BCDRRelatedIcm=ChildIncidentId;
+let transitiveseverity = database("IcmDatawarehouse").IncidentHistory
+| where ChangeDate>= startDate
+| where ChangeDate<= endDate
+| where ChangedBy == "CN=icmclient.v3workflow.icm.msftcloudes.com"
+| mv-expand todynamic(ChangeCategories)
+| where ChangeCategories  in ("SeverityUpgrade", "OutageDeclared") or IsOutage == true
+| extend ChangeCategories = iff(ChangeCategories  == "Edit", "OutageDeclared", ChangeCategories)
+| join kind=inner database("IcmDatawarehouse").IncidentDescriptions on HistoryId, IncidentId
+| where Text has "Transitive Severity"
+| summarize arg_max(Lens_IngestionTime, *) by HistoryId
+| join kind = inner database("IcmDatawarehouse").IncidentsSnapshotV2() on IncidentId
+| join kind = inner (database("IcmDatawarehouse").TenantsSnapshotV2 | summarize arg_max(Lens_IngestionTime, *) by TenantId) on $left.OwningTenantId1 == $right.TenantId
+| where OwningTenantName1 != "PetShop"
+| order by ChangeDate
+| project ChangeDate, IncidentId, ChangeCategories, ["NewSeverity"] = Severity, IsOutage,["TenantName                "] = OwningTenantName1, FrontEndCategoryName
+| summarize make_set(ChangeCategories), make_set(["TenantName                "]), make_set(ChangeDate), make_set(NewSeverity), make_set(IsOutage) by IncidentId;
+let PIR = Get_Icm_PostIncidentReports()
+| where CreationDate >= startDate
+| summarize 
+    PIR_PIRReportId = make_set(PIRReportId),
+    PIR_Lens_IngestionTime = make_set(Lens_IngestionTime),
+    PIR_Resources = make_set(Resources),
+    PIR_CreationDate = make_set(CreationDate),
+    PIR_ModifiedDate = make_set(ModifiedDate),
+    PIR_Status = make_set(Status),
+    PIR_Title = make_set(Title),
+    PIR_OwningTenantPublicId = make_set(OwningTenantPublicId),
+    PIR_FeatureTeam = make_set(FeatureTeam),
+    PIR_FeatureTeamName = make_set(FeatureTeamName),
+    PIR_ReportOwnerContactAlias = make_set(ReportOwnerContactAlias),
+    PIR_SreOrSeContactAlias = make_set(SreOrSeContactAlias),
+    PIR_IncidentManagerContactAlias = make_set(IncidentManagerContactAlias),
+    PIR_CommunicationsManagerContactAlias = make_set(CommunicationsManagerContactAlias),
+    PIR_LiveSiteIncidents = make_set(LiveSiteIncidents),
+    PIR_CustomerIncidents = make_set(CustomerIncidents),
+    PIR_RootCauseId = make_set(RootCauseId),
+    PIR_IncidentRaisedDate = make_set(IncidentRaisedDate),
+    PIR_ImpactDuration = make_set(ImpactDuration),
+    PIR_ServiceImpacted = make_set(ServiceImpacted),
+    PIR_ServiceResponsible = make_set(ServiceResponsible),
+    PIR_ReceivedImpact = make_set(ReceivedImpact),
+    PIR_QosImpact = make_set(QosImpact),
+    PIR_NoOfCustomersImpacted = make_set(NoOfCustomersImpacted),
+    PIR_NoOfCustomersNotified = make_set(NoOfCustomersNotified),
+    PIR_NotificationSourceType = make_set(NotificationSourceType),
+    PIR_NotificationSource = make_set(NotificationSource),
+    PIR_ClusterDataCenter = make_set(ClusterDataCenter),
+    PIR_EventParticipants = make_set(EventParticipants),
+    PIR_RepeatOutage = make_set(RepeatOutage),
+    PIR_RepeatOutageDetail = make_set(RepeatOutageDetail),
+    PIR_ImpactStart = make_set(ImpactStart),
+    PIR_ImpactStartDescription = make_set(ImpactStartDescription),
+    PIR_Detection = make_set(Detection),
+    PIR_DetectionDescription = make_set(DetectionDescription),
+    PIR_Triage = make_set(Triage),
+    PIR_TriageDescription = make_set(TriageDescription),
+    PIR_EngineerEngaged = make_set(EngineerEngaged),
+    PIR_EngineerEngagedDescription = make_set(EngineerEngagedDescription),
+    PIR_CommsEngaged = make_set(CommsEngaged),
+    PIR_CommsEngagedDescription = make_set(CommsEngagedDescription),
+    PIR_FirstCustomerAdvisory = make_set(FirstCustomerAdvisory),
+    PIR_FirstCustomerAdvisoryDescription = make_set(FirstCustomerAdvisoryDescription),
+    PIR_DetailedCustomerAdvisory = make_set(DetailedCustomerAdvisory),
+    PIR_DetailedCustomerAdvisoryDescription = make_set(DetailedCustomerAdvisoryDescription),
+    PIR_Dashboard = make_set(Dashboard),
+    PIR_DashboardDescription = make_set(DashboardDescription),
+    PIR_Mitigation = make_set(Mitigation),
+    PIR_MitigationDescription = make_set(MitigationDescription),
+    PIR_Diagnosis = make_set(Diagnosis),
+    PIR_DiagnosisDescription = make_set(DiagnosisDescription),
+    PIR_Recovery = make_set(Recovery),
+    PIR_RecoveryDescription = make_set(RecoveryDescription),
+    PIR_Other1 = make_set(Other1),
+    PIR_Other1Description = make_set(Other1Description),
+    PIR_Other2 = make_set(Other2),
+    PIR_Other2Description = make_set(Other2Description),
+    PIR_Other3 = make_set(Other3),
+    PIR_Other3Description = make_set(Other3Description),
+    PIR_KnownTestCase = make_set(KnownTestCase),
+    PIR_PossibleTest = make_set(PossibleTest),
+    PIR_TestingIssues = make_set(TestingIssues),
+    PIR_PublicSummary = make_set(PublicSummary),
+    PIR_PublicCustomerImpact = make_set(PublicCustomerImpact),
+    PIR_PublicRootCause = make_set(PublicRootCause),
+    PIR_PublicNextSteps = make_set(PublicNextSteps),
+    PIR_Version = make_set(Version),
+    PIR_Lens_Originator = make_set(Lens_Originator),
+    PIR_Lens_OriginatorData = make_set(Lens_OriginatorData),
+    PIR_Lens_SessionId = make_set(Lens_SessionId),
+    PIR_Lens_BatchId = make_set(Lens_BatchId),
+    PIR_OutageDeclaredDate = make_set(OutageDeclaredDate),
+    PIR_OutageDeclaredDescription = make_set(OutageDeclaredDescription),
+    PIR_PIRTag = make_set(PIRTag),
+    PIR_SecondaryMapping = make_set(SecondaryMapping),
+    PIR_HasCausedByIncidents = make_set(HasCausedByIncidents),
+    PIR_IsPirMultiRegion = make_set(IsPirMultiRegion),
+    PIR_IsPirUnlinked = make_set(IsPirUnlinked),
+    PIR_MinPIRModified = make_set(MinPIRModified),
+    PIR_MaxPIRModified = make_set(MaxPIRModified),
+    PIR_IsPostmortemValid = make_set(IsPostmortemValid),
+    PIR_PIROwningTenant = make_set(PIROwningTenant),
+    PIR_PIROwningTenantId = make_set(PIROwningTenantId),
+    PIR_PIRSeverity = make_set(PIRSeverity),
+    PIR_PostmortemDueDate = make_set(PostmortemDueDate),
+    PIR_IsPostmortemCompleted = make_set(IsPostmortemCompleted),
+    PIR_PostmortemClosedDate = make_set(PostmortemClosedDate),
+    PIR_PostmortemDaysOpen = make_set(PostmortemDaysOpen),
+    PIR_PostmortemDaysSinceMitigation = make_set(PostmortemDaysSinceMitigation),
+    PIR_IsPostmortemWithinSla = make_set(IsPostmortemWithinSla),
+    PIR_BaseSnapshotTime = make_set(BaseSnapshotTime)
+    by CreationIncidentId;
+let Whys = database('IcMDataWarehouse').PostIncidentReports  
+    | where CreationDate >= todatetime('10/01/2025') and Status in ("Completed", "ReadyForReview")  
+    | summarize arg_max(Lens_IngestionTime, *) by PIRReportId  
+    | extend PIRReportId = tostring(PIRReportId)  
+    | join kind=inner   
+        database('IcMDataWarehouse').PostmortemAdditionalData   
+        on $left.PIRReportId == $right.PostmortemId  
+    | where isnotempty(Whys)
+    | summarize arg_max(LastModifiedTime, *) by PostmortemId  
+    //| where CreationIncidentId == 694538461
+    | project  PIRReportId, RetroMitigation = Mitigation, RootCauseId, Whys, Status, CreationIncidentId
+    | summarize make_set(PIRReportId), make_set(RetroMitigation), make_set(RootCauseId), make_set(Whys), make_set(Status) by CreationIncidentId;
+let ImpactedRegions =
+database('IcmDataWarehouse').IncidentImpactedEntities
+ | where EntityType == "Region"
+ | summarize arg_max(Lens_IngestionTime, *) by IncidentId
+ | summarize IcMImpactedRegions = make_list(EntityId), IcMImpactedRegionCount = count() by IncidentId
+ | extend IcMImpactedRegionCount = iff(IcMImpactedRegions contains "global", "Global", tostring(IcMImpactedRegionCount));
+let BrainDeclared =
+cluster("chip.centralus.kusto.windows.net").database("BrainAnalytics").BrainAnalyticsGeneralTableCritSit
+| project IncidentId, DeclarationType;
+let analysis = ttmscope
+| join kind=leftouter (Get_Icm_Events_LinkedIncidents() | project OutageIncidentId=ChildIncidentId, RootResponsibleIncidentId=ResponsibleIncidentId, Level) on OutageIncidentId
+| join kind=leftouter copilot on $left.OutageIncidentId==$right.IncidentId
+| extend parsed = parse_json(Results)
+| extend
+    Impacts = replace_regex(tostring(parsed.Impacts), @"['"",\[\]\(\)\t\n\r]", ""),
+    Symptoms = replace_regex(tostring(parsed.Symptoms), @"['"",\[\]\(\)\t\n\r]", ""),
+    Severity = replace_regex(tostring(parsed.Severity), @"['"",\[\]\(\)\t\n\r]", ""),
+    State = replace_regex(tostring(parsed.State), @"['"",\[\]\(\)\t\n\r]", ""),
+    LatestUpdate = replace_regex(tostring(parsed.["Latest Update"]), @"['"",\[\]\(\)\t\n\r]", ""),
+    OutageUpdate = replace_regex(tostring(parsed.["Outage Update"]), @"['"",\[\]\(\)\t\n\r]", ""),
+    RootCauses = replace_regex(tostring(parsed.["Root Causes"]), @"['"",\[\]\(\)\t\n\r]", ""),
+    Mitigations = replace_regex(tostring(parsed.Mitigation), @"['"",\[\]\(\)\t\n\r]", "")
+| join kind=leftouter Get_Icm_Outages() on OutageIncidentId
+| extend HasResponsibleParent=case(isnotempty(ResponsibleIncidentId), 1, 0), HasParent=case(isnotempty(OutageParentIncidentId), 1, 0), HasCausedByParent=case(isnotempty(CausedByParentIncidentId), 1, 0)
+| join kind=leftouter (cluster('bdsair.centralus.kusto.windows.net').database('Shared').RootCauseContributingFactor | summarize make_set(level_1), make_set(level_2), make_set(level_3), make_set(level_4) by OutageIncidentId=tolong(incident_id)) on OutageIncidentId
+| join kind=leftouter PIR on $left.OutageIncidentId==$right.CreationIncidentId
+| join kind=leftouter Whys on $left.OutageIncidentId==$right.CreationIncidentId
+| join kind=leftouter TransferAssistanceData on IncidentId
+| join kind=leftouter BCDR on $left.OutageIncidentId==$right.BCDRIcmId
+| join kind=leftouter database("Reporting").Ingest_Report_TTTv1() on $left.OutageIncidentId==$right.IncidentId
+| extend IsBCDRRelated=case(OutageIncidentId in (BCDRRelatedIcms), 1, 0)
+| join kind=leftouter (Get_Icm_Events() | project EventId, TTM_EventLevel) on $left.OutageIncidentId==$right.EventId
+| join kind=leftouter (cluster('galileoprod.westus.kusto.windows.net').database('galileomds').ASCClientTelemetryEvent | where env_time > ago(90d) and environment == "Prod" and page == "ITSTroubleshoot" and data == "TSG-link-card-click" | project srId=tolong(srId), data, env_time | summarize make_set(data), make_set(env_time) by srId) on $left.OutageIncidentId==$right.srId
+| join kind=leftouter transitiveseverity on IncidentId
+| join kind=leftouter (cluster('automationanalytics.westus.kusto.windows.net').database('AutomationWorkflowAnalytics').IA_Incidents_Touched | summarize arg_max(Timestamp_Processing, *) by IncidentId) on $left.IncidentId==$right.IncidentId
+| join kind = leftouter (Get_ChangeFields) on $left.IncidentId == $right.IncidentId
+| join kind = leftouter (ImpactedRegions) on $left.IncidentId == $right.IncidentId
+| join kind = leftouter (BrainDeclared) on $left.IncidentId == $right.IncidentId
+| join kind = leftouter (Get_Report_Repairs() | summarize make_set(IncidentBugMappingId) by IncidentId) on IncidentId;
+let airo = 
+        // This variable aggregates AIRO data for each IncidentId
+        cluster('airoconsumption.centralus').database('UserAiro').AiroAtomicExpanded
+        | where IncidentId in (ttmscope | project OutageIncidentId)
+            | summarize 
+                 IRR = sum(AiroFleet)
+                ,IDR = sum(AirodFleet) 
+            by IncidentId, Offering
+            | summarize 
+                 IRR = sum(IRR)
+                ,IDR = sum(IDR) 
+               by IncidentId
+            | join kind=leftouter hint.strategy=shuffle (
+                database('Common').Get_Icm_Incidents_WithTTx()
+                    | project IncidentId, TTM
+            ) on $left.IncidentId == $right.IncidentId 
+            | extend  
+                 AIROD = IDR
+                ,Unavailability = IDR / max_of(TTM, 1440)
+                ,Days = round(max_of(1, TTM / 1440.0), 1)
+        | extend Merit = round(IRR * Unavailability * Days, 1)
+        | distinct IncidentId, AIROD;
+let seSrCount =
+        // Get SRCount with the old approach prior to BR Semester
+        cluster('icmclustermirrorsre.centralus').database("Outage").SupportTicketSummaries
+            | extend json = parse_json(Json)
+            | extend 
+                 OutageIncidentId = tolong(json["IncidentId"])
+                ,supportCaseVolume = todouble(json["CaseVolume"])
+            | where OutageIncidentId in (ttmscope | project OutageIncidentId)
+            | summarize seSrCount = max(supportCaseVolume) by OutageIncidentId
+            | where isnotempty(OutageIncidentId)
+            | distinct OutageIncidentId, seSrCount
+    ;
+let RRInScope = analysis | project RootResponsibleIncidentId;
+let DCRelated = Get_Icm_Incidents_WithTTx() | where IncidentId in (RRInScope) | where ServiceName contains "MCIO" | project IncidentId;
+analysis
+| extend IsDCRelated=case(RootResponsibleIncidentId in (DCRelated), 1, 0)
+| extend EVPJoined=case(OutageIncidentId in (specialScopedOutages), 1, 0)
+| join kind=leftouter airo on IncidentId
+| join kind=leftouter seSrCount on OutageIncidentId

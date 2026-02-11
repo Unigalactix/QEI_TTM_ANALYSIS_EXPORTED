@@ -1,0 +1,39 @@
+########################################
+# Project-specific ignores
+########################################
+DecTTM/
+
+# Data exports and CSVs
+*.csv
+*.tsv
+*.log
+
+########################################
+# Python
+########################################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+########################################
+# OS / Editor
+########################################
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
