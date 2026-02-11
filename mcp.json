@@ -30,7 +30,7 @@
 		"ado": {
 			"type": "stdio",
 			"command": "npx",
-			"args": ["-y", "@azure-devops/mcp@next", "${input:Quadrant-VBU}"]
+			"args": ["-y", "@azure-devops/mcp@next", "${input:ado_org}"]
     	}
 	},
 	"inputs": [
@@ -40,10 +40,5 @@
 			"description": "Azure OpenAI Embedding Endpoint (optional, for semantic search)",
 			"default": "https://openai-dev-westus3-001.openai.azure.com/openai/deployments/text-embedding-ada-002/embeddings?api-version=2023-05-15"
 		},
-		{
-			"id": "ado_org",
-			"type": "promptString",
-			"description": "Azure DevOps organization name  (e.g. 'contoso')"
-		}
 	]
 }
